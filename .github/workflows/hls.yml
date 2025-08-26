@@ -1,0 +1,98 @@
+name: Convert Videos to HLS
+
+on:
+  push:
+    paths:
+      - "*.mp4"
+      - "*.mkv"
+  workflow_dispatch:
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Convert videos to HLS
+        run: |
+          mkdir -p public
+          for file in *.mp4 *.mkv; do
+            [ -e "$file" ] || continue
+            name=$(basename "$file" | sed 's/\.[^.]*$//')
+            mkdir -p "public/$name"
+            echo "Converting $file -> public/$name/playlist.m3u8"
+            ffmpeg -i "$file"               -c:v libx264 -c:a aac               -hls_time 10 -hls_list_size 0 -f hls               "public/$name/playlist.m3u8"
+          done
+
+      - name: Create index.html player
+        run: |
+          cat > public/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>HLS Video Player</title>
+            <style>
+              body { display: flex; justify-content: center; align-items: center; height: 100vh; background: #111; margin: 0; }
+              video { width: 80%; height: auto; border: 3px solid #00ffcc; border-radius: 10px; background: #000; }
+              select { position: absolute; top: 20px; left: 20px; padding: 6px; font-size: 16px; }
+            </style>
+          </head>
+          <body>
+            <select id="videoList"></select>
+            <video id="video" controls autoplay></video>
+
+            <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+            <script>
+              async function loadVideos() {
+                const res = await fetch(window.location.href);
+                const text = await res.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, "text/html");
+                const links = [...doc.querySelectorAll("a")].map(a => a.href).filter(h => h.endsWith("playlist.m3u8"));
+
+                const videoList = document.getElementById("videoList");
+                links.forEach((link, i) => {
+                  let opt = document.createElement("option");
+                  opt.value = link;
+                  opt.textContent = "Video " + (i+1);
+                  videoList.appendChild(opt);
+                });
+
+                if (links.length > 0) {
+                  playVideo(links[0]);
+                }
+
+                videoList.addEventListener("change", () => playVideo(videoList.value));
+              }
+
+              function playVideo(url) {
+                const video = document.getElementById("video");
+                if (Hls.isSupported()) {
+                  const hls = new Hls();
+                  hls.loadSource(url);
+                  hls.attachMedia(video);
+                } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+                  video.src = url;
+                }
+              }
+
+              loadVideos();
+            </script>
+          </body>
+          </html>
+          EOF
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
